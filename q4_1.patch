@@ -1,0 +1,41 @@
+diff --git a/include/strata/kernels/ngram.hpp b/include/strata/kernels/ngram.hpp
+index 4452b4f6..9a3eaf2d 100644
+--- a/include/strata/kernels/ngram.hpp
++++ b/include/strata/kernels/ngram.hpp
+@@ -56,7 +56,7 @@ inline constexpr int PLE_ROW_BYTES_MAX = PLE_ROW_BYTES_BF16;             // the
+ /// 160-value row, how to turn a row into floats) and nothing else: `PleTable::open`, `format()`, the reader's row size,
+ /// the error string and the buffers' size all read this list, so a new format cannot be in one switch and missing from
+ /// another. A row is always `PLE_HEAD_DIM` = 160 values = 5 blocks of 32 for the block formats.
+-enum class PleFormat : uint8_t { IQ4_NL, Q5_0, F8_E4M3, Q5_1, Q8_0, Q4_0, BF16, NVFP4 };
++enum class PleFormat : uint8_t { IQ4_NL, Q5_0, F8_E4M3, Q5_1, Q8_0, Q4_0, BF16, NVFP4, Q4_1 };
+ 
+ struct PleFormatInfo {
+     PleFormat id;
+diff --git a/src/kernels/ngram.cpp b/src/kernels/ngram.cpp
+index 07636d0f..69d38974 100644
+--- a/src/kernels/ngram.cpp
++++ b/src/kernels/ngram.cpp
+@@ -174,6 +174,15 @@ template <void (*Block)(const uint8_t*, float*), int BlockBytes>
+ void dequant_blocks(const uint8_t* row, float /*scale*/, float* out160) {
+     for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) Block(row + (size_t) b * BlockBytes, out160 + b * 32);
+ }
++// GGML Q4_1: fp16 scale/minimum followed by 16 bytes of split-half nibbles.
++void dequant_q4_1(const uint8_t* block, float* out) {
++    const float d = strata::fp16_to_fp32(strata::read_u16(block));
++    const float m = strata::fp16_to_fp32(strata::read_u16(block + 2));
++    for (int j = 0; j < 16; ++j) {
++        out[j] = d * (block[4 + j] & 15) + m;
++        out[j + 16] = d * (block[4 + j] >> 4) + m;
++    }
++}
+ void dequant_iq4_nl(const uint8_t* row, float, float* out160) { iq4nl_dequant_row(row, out160); }
+ void dequant_fp8(const uint8_t* row, float scale, float* out160) { fp8_e4m3_dequant_row(row, scale, out160); }
+ void dequant_bf16(const uint8_t* row, float, float* out160) { bf16_dequant_row(row, out160); }
+@@ -194,6 +203,7 @@ const PleFormatInfo kPleFormats[] = {
+     // NVFP4 x16 (NVIDIA's Qwen3.8-Flash-Next-FP4-Local, tools/nvfp4_local_pack.py ple): 90-byte rows, I8 bytes marked
+     // strata.ple.format = nvfp4x16 with strata.ple.scale. The tensor is [90, rows]: ne0 is the row's byte count.
+     {PleFormat::NVFP4, "NVFP4", "I8", PLE_ROW_BYTES_NVFP4, true, dequant_nvfp4},
++    {PleFormat::Q4_1, "Q4_1", "Q4_1", (PLE_HEAD_DIM / 32) * 20, false, dequant_blocks<dequant_q4_1, 20>},
+ };
+ constexpr int kPleFormatCount = (int) (sizeof kPleFormats / sizeof kPleFormats[0]);
+ }  // namespace
